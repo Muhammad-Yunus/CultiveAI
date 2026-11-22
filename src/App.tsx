@@ -203,6 +203,12 @@ export default function App() {
     const res = await fetch(`/api/telemetry/export?zoneId=${activeZoneId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (res.status === 401) {
+      setUser(null);
+      setToken(null);
+      setAuthModalOpen(true);
+      return;
+    }
     if (!res.ok) return;
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -224,6 +230,12 @@ export default function App() {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (res.status === 401) {
+      setUser(null);
+      setToken(null);
+      setAuthModalOpen(true);
+      return;
+    }
     if (res.ok) {
       await fetchOverview(activeZoneId);
     }
@@ -861,12 +873,19 @@ export default function App() {
           aria-label="Account"
           className="w-9 h-9 rounded-full overflow-hidden border border-black/10 cursor-pointer"
         >
-          <img
-            src="/src/assets/images/agronomist_user_avatar_1795354702290.jpg"
-            alt="Operator"
-            referrerPolicy="no-referrer"
-            className="w-full h-full object-cover"
-          />
+          {!avatarImgFailed ? (
+            <img
+              src="/src/assets/images/agronomist_user_avatar_1795354702290.jpg"
+              alt={user ? user.name : 'Operator'}
+              referrerPolicy="no-referrer"
+              onError={() => setAvatarImgFailed(true)}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full bg-[#5F8E3E] text-white text-xs font-semibold flex items-center justify-center">
+              {user ? user.name.slice(0, 2).toUpperCase() : 'CA'}
+            </div>
+          )}
         </button>
       </nav>
 

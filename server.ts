@@ -5,7 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { Server as SocketIOServer } from 'socket.io';
 import swaggerUi from 'swagger-ui-express';
-import { desc, eq, count } from 'drizzle-orm';
+import { asc, desc, eq, count } from 'drizzle-orm';
 
 import { db, isDbConfigured, sqlClient } from './src/db';
 import {
@@ -65,7 +65,14 @@ async function startServer() {
   });
   app.use(express.json({ limit: '1mb' }));
 
-  // Lightweight sliding-window rate limiter for auth endpoints
+  // Warn clearly in production if AUTH_SECRET is missing or short
+  if (isProduction && (!process.env.AUTH_SECRET || process.env.AUTH_SECRET.trim().length < 16)) {
+    console.warn(
+      '[CultivAI Warning] AUTH_SECRET is not set (>=16 chars). Ephemeral secret will invalidate user sessions on restart or across replicas.'
+    );
+  }
+
+  // Lightweight sliding-window rate limiter for auth endpoints with stale-IP pruning
   const authHits = new Map<string, number[]>();
   app.use('/api/auth', (req, res, next) => {
     if (req.method !== 'POST') {
@@ -75,6 +82,13 @@ async function startServer() {
     const ip = req.ip || 'unknown';
     const now = Date.now();
     const windowMs = 60_000;
+    if (authHits.size > 1000) {
+      for (const [k, times] of authHits.entries()) {
+        if (times.every((t) => now - t >= windowMs)) {
+          authHits.delete(k);
+        }
+      }
+    }
     const recent = (authHits.get(ip) ?? []).filter((t) => now - t < windowMs);
     if (recent.length >= 20) {
       res.status(429).json({ error: 'Too many authentication attempts. Please wait a minute.' });
@@ -139,12 +153,29 @@ async function startServer() {
     })
   );
 
-  // Healthcheck
+  // Healthcheck (verifies actual PostgreSQL connectivity when configured)
   app.get('/api/health', async (_req, res) => {
-    res.json({
-      status: 'ok',
+    const databaseConfigured = isDbConfigured();
+    let databaseReachable = false;
+
+    if (databaseConfigured && sqlClient) {
+      try {
+        await Promise.race([
+          sqlClient`SELECT 1`,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('DB ping timeout')), 3000)),
+        ]);
+        databaseReachable = true;
+      } catch {
+        databaseReachable = false;
+      }
+    }
+
+    const healthy = !databaseConfigured || databaseReachable;
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? 'ok' : 'degraded',
       service: 'CultivAI',
-      databaseConfigured: isDbConfigured(),
+      databaseConfigured,
+      databaseReachable,
       timestamp: new Date().toISOString(),
     });
   });
@@ -417,6 +448,11 @@ async function startServer() {
         alertsTriggered: newAlerts.length,
       });
     } catch (err) {
+      const e = err as Error & { statusCode?: number };
+      if (e.statusCode === 400) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
       console.error('Ingest telemetry error:', err);
       res.status(500).json({ error: 'Failed to persist telemetry reading.' });
     }
@@ -456,6 +492,11 @@ async function startServer() {
         latestId: result.latest?.id ?? null,
       });
     } catch (err) {
+      const e = err as Error & { statusCode?: number };
+      if (e.statusCode === 400) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
       console.error('Batch ingest error:', err);
       res.status(500).json({ error: 'Failed to persist telemetry batch.' });
     }
@@ -581,6 +622,11 @@ async function startServer() {
       io.to('telemetry:live').emit('zone:updated', { zoneId: zone.id });
       res.status(201).json({ zone });
     } catch (err) {
+      const pgCode = (err as { code?: string })?.code;
+      if (pgCode === '23505') {
+        res.status(409).json({ error: `Zone code '${code}' already exists.` });
+        return;
+      }
       console.error('Create zone error:', err);
       res.status(500).json({ error: 'Failed to create greenhouse zone.' });
     }
@@ -601,14 +647,32 @@ async function startServer() {
     const updates: Partial<typeof zoneThresholds.$inferInsert> = {
       updatedAt: new Date(),
     };
-    if (typeof body.targetTempC === 'number') updates.targetTempC = body.targetTempC;
-    if (typeof body.targetMoisturePct === 'number')
-      updates.targetMoisturePct = body.targetMoisturePct;
-    if (typeof body.targetCo2Ppm === 'number') updates.targetCo2Ppm = body.targetCo2Ppm;
-    if (typeof body.targetEcMs === 'number') updates.targetEcMs = body.targetEcMs;
-    if (typeof body.lightPhotoperiodH === 'number')
-      updates.lightPhotoperiodH = body.lightPhotoperiodH;
-    if (typeof body.autoIrrigation === 'boolean') updates.autoIrrigation = body.autoIrrigation;
+
+    const numericRules: Array<[keyof typeof updates, unknown, number, number, string]> = [
+      ['targetTempC', body.targetTempC, 10, 45, 'targetTempC must be between 10 and 45 °C.'],
+      ['targetMoisturePct', body.targetMoisturePct, 10, 100, 'targetMoisturePct must be between 10 and 100%.'],
+      ['targetCo2Ppm', body.targetCo2Ppm, 200, 3000, 'targetCo2Ppm must be between 200 and 3000 ppm.'],
+      ['targetEcMs', body.targetEcMs, 0.2, 6.0, 'targetEcMs must be between 0.2 and 6.0 mS.'],
+      ['lightPhotoperiodH', body.lightPhotoperiodH, 0, 24, 'lightPhotoperiodH must be between 0 and 24 hours.'],
+    ];
+
+    for (const [key, rawVal, min, max, msg] of numericRules) {
+      if (rawVal !== undefined) {
+        if (typeof rawVal !== 'number' || !Number.isFinite(rawVal) || rawVal < min || rawVal > max) {
+          res.status(400).json({ error: msg });
+          return;
+        }
+        (updates as Record<string, unknown>)[key] = rawVal;
+      }
+    }
+
+    if (body.autoIrrigation !== undefined) {
+      if (typeof body.autoIrrigation !== 'boolean') {
+        res.status(400).json({ error: 'autoIrrigation must be a boolean.' });
+        return;
+      }
+      updates.autoIrrigation = body.autoIrrigation;
+    }
 
     try {
       const [updated] = await db
@@ -630,6 +694,28 @@ async function startServer() {
     }
   });
 
+  app.get('/api/schedules', async (req, res) => {
+    if (!db) {
+      res.status(503).json({ error: 'Database not configured.' });
+      return;
+    }
+    const zoneId = req.query.zoneId ? Number(req.query.zoneId) : undefined;
+    try {
+      const rows =
+        zoneId && Number.isInteger(zoneId) && zoneId > 0
+          ? await db
+              .select()
+              .from(zoneSchedules)
+              .where(eq(zoneSchedules.zoneId, zoneId))
+              .orderBy(asc(zoneSchedules.startTime))
+          : await db.select().from(zoneSchedules).orderBy(asc(zoneSchedules.startTime));
+      res.json({ schedules: rows });
+    } catch (err) {
+      console.error('List schedules error:', err);
+      res.status(500).json({ error: 'Failed to load automation schedules.' });
+    }
+  });
+
   app.post('/api/schedules', requireUserAuth, async (req, res) => {
     if (!db) {
       res.status(503).json({ error: 'Database not configured.' });
@@ -643,17 +729,30 @@ async function startServer() {
 
     if (
       !Number.isInteger(zoneId) ||
+      zoneId <= 0 ||
       title.length < 2 ||
+      title.length > 120 ||
       !['irrigation', 'lighting', 'nutrient', 'harvest'].includes(category) ||
-      !/^\d{2}:\d{2}$/.test(startTime) ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime) ||
       !Number.isInteger(durationMin) ||
-      durationMin < 1
+      durationMin < 1 ||
+      durationMin > 1440
     ) {
       res.status(400).json({ error: 'Invalid schedule payload.' });
       return;
     }
 
     try {
+      const [zone] = await db
+        .select({ id: greenhouseZones.id })
+        .from(greenhouseZones)
+        .where(eq(greenhouseZones.id, zoneId))
+        .limit(1);
+      if (!zone) {
+        res.status(404).json({ error: 'Greenhouse zone not found.' });
+        return;
+      }
+
       const [created] = await db
         .insert(zoneSchedules)
         .values({ zoneId, title, category, startTime, durationMin, enabled: true })

@@ -36,7 +36,7 @@ export function buildOpenApiSpec(serverUrl: string) {
       },
       {
         name: 'Harvest AI Assistant',
-        description: 'Server-side Gemini agronomist analysis grounded in live PostgreSQL telemetry.',
+        description: 'OpenAI-compatible RAG greenhouse expert & forecaster grounded in live PostgreSQL telemetry.',
       },
     ],
     components: {
@@ -298,6 +298,38 @@ export function buildOpenApiSpec(serverUrl: string) {
           responses: { '200': { description: 'CSV file download' } },
         },
       },
+      '/api/zones': {
+        get: {
+          tags: ['Zones, Thresholds, Schedules & Alerts'],
+          summary: 'List all configured greenhouse zones',
+          responses: { '200': { description: 'List of greenhouse zones' } },
+        },
+        post: {
+          tags: ['Zones, Thresholds, Schedules & Alerts'],
+          summary: 'Create a new greenhouse zone with default environmental thresholds',
+          security: [{ UserBearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['code', 'name'],
+                  properties: {
+                    code: { type: 'string', example: 'ZONE-C3' },
+                    name: { type: 'string', example: 'East Microgreens' },
+                    cropType: { type: 'string', example: 'Butterhead Lettuce' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '201': { description: 'Zone created' },
+            '409': { description: 'Zone code already exists' },
+          },
+        },
+      },
       '/api/thresholds/{zoneId}': {
         patch: {
           tags: ['Zones, Thresholds, Schedules & Alerts'],
@@ -313,6 +345,9 @@ export function buildOpenApiSpec(serverUrl: string) {
         get: {
           tags: ['Zones, Thresholds, Schedules & Alerts'],
           summary: 'List automation schedules',
+          parameters: [
+            { name: 'zoneId', in: 'query', required: false, schema: { type: 'integer' } },
+          ],
           responses: { '200': { description: 'Schedule items' } },
         },
         post: {
@@ -320,6 +355,26 @@ export function buildOpenApiSpec(serverUrl: string) {
           summary: 'Create a new greenhouse automation schedule',
           security: [{ UserBearerAuth: [] }],
           responses: { '201': { description: 'Schedule created' } },
+        },
+      },
+      '/api/schedules/{id}': {
+        patch: {
+          tags: ['Zones, Thresholds, Schedules & Alerts'],
+          summary: 'Toggle schedule active state',
+          security: [{ UserBearerAuth: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          ],
+          responses: { '200': { description: 'Schedule updated' } },
+        },
+        delete: {
+          tags: ['Zones, Thresholds, Schedules & Alerts'],
+          summary: 'Delete a greenhouse automation schedule',
+          security: [{ UserBearerAuth: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          ],
+          responses: { '200': { description: 'Schedule deleted' } },
         },
       },
       '/api/alerts/{id}/ack': {

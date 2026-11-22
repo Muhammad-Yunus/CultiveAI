@@ -651,6 +651,12 @@ export function ZonesAndKeysView({
     loadKeys();
   }, [token]);
 
+  useEffect(() => {
+    if (zones.length > 0 && !zones.some((z) => z.id === selectedZoneId)) {
+      setSelectedZoneId(zones[0].id);
+    }
+  }, [zones, selectedZoneId]);
+
   async function createKey(e: FormEvent) {
     e.preventDefault();
     if (!token) {
@@ -919,7 +925,7 @@ export function ZonesAndKeysView({
           </div>
 
           {token && (
-            <form onSubmit={createZone} className="pt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <form onSubmit={createZone} className="pt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
               <input
                 type="text"
                 required
@@ -934,6 +940,14 @@ export function ZonesAndKeysView({
                 value={zoneName}
                 onChange={(e) => setZoneName(e.target.value)}
                 placeholder="East Microgreens"
+                className="px-3 py-2 rounded-xl bg-[#F4F8F5] dark:bg-white/5 border border-black/10 dark:border-white/10 text-[12px]"
+              />
+              <input
+                type="text"
+                required
+                value={cropType}
+                onChange={(e) => setCropType(e.target.value)}
+                placeholder="Crop cultivar (e.g. Butterhead Lettuce)"
                 className="px-3 py-2 rounded-xl bg-[#F4F8F5] dark:bg-white/5 border border-black/10 dark:border-white/10 text-[12px]"
               />
               <button

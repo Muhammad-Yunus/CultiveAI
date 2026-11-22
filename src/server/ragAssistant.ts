@@ -304,25 +304,38 @@ Your capabilities & rules:
 
   const endpoint = buildCompletionsEndpoint(parsedBase.toString());
 
-  const apiResponse = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${aiKey}`,
-    },
-    body: JSON.stringify({
-      model: aiModel,
-      temperature: 0.3,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...sanitizedHistory,
-        {
-          role: 'user',
-          content: `[CULTIVAI_RAG_CONTEXT]\n${contextText}\n[/CULTIVAI_RAG_CONTEXT]\n\nUser Question: ${params.prompt}`,
-        },
-      ],
-    }),
-  });
+  let apiResponse: globalThis.Response;
+  try {
+    apiResponse = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${aiKey}`,
+      },
+      body: JSON.stringify({
+        model: aiModel,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...sanitizedHistory,
+          {
+            role: 'user',
+            content: `[CULTIVAI_RAG_CONTEXT]\n${contextText}\n[/CULTIVAI_RAG_CONTEXT]\n\nUser Question: ${params.prompt}`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+  } catch (err) {
+    const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    const wrapped = new Error(
+      isTimeout
+        ? 'AI provider timed out after 45 seconds.'
+        : `Failed to reach AI provider: ${err instanceof Error ? err.message : 'Network error'}`
+    ) as Error & { statusCode?: number };
+    wrapped.statusCode = isTimeout ? 504 : 502;
+    throw wrapped;
+  }
 
   const payload = await apiResponse.json().catch(() => ({}));
   if (!apiResponse.ok) {

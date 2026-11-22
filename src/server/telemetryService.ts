@@ -127,6 +127,8 @@ export function validateTelemetryInput(raw: unknown): {
   };
 }
 
+let baseInfraPromise: Promise<typeof greenhouseZones.$inferSelect[] | null> | null = null;
+
 export async function ensureBaseInfrastructure() {
   if (!db) return null;
 
@@ -135,78 +137,94 @@ export async function ensureBaseInfrastructure() {
     return existingZones;
   }
 
-  const insertedZones = await db
-    .insert(greenhouseZones)
-    .values([
-      {
-        code: 'ZONE-A1',
-        name: 'North Hydroponic Bay',
-        cropType: 'Butterhead Lettuce',
-        status: 'nominal',
-      },
-      {
-        code: 'ZONE-B2',
-        name: 'South Leafy Greens',
-        cropType: 'Genovese Basil',
-        status: 'nominal',
-      },
-    ])
-    .returning();
-
-  for (const zone of insertedZones) {
-    await db
-      .insert(zoneThresholds)
-      .values({
-        zoneId: zone.id,
-        targetTempC: 23,
-        targetMoisturePct: 68,
-        targetCo2Ppm: 900,
-        targetEcMs: 2.1,
-        lightPhotoperiodH: 15,
-        autoIrrigation: true,
-      })
-      .onConflictDoNothing();
+  if (baseInfraPromise) {
+    return baseInfraPromise;
   }
 
-  const primaryZone = insertedZones[0];
-  if (primaryZone) {
-    await db.insert(zoneSchedules).values([
-      {
-        zoneId: primaryZone.id,
-        title: 'Morning NFT Nutrient Circulation',
-        category: 'irrigation',
-        startTime: '06:30',
-        durationMin: 45,
-        enabled: true,
-      },
-      {
-        zoneId: primaryZone.id,
-        title: 'Full-Spectrum LED Canopy Cycle',
-        category: 'lighting',
-        startTime: '07:00',
-        durationMin: 900,
-        enabled: true,
-      },
-      {
-        zoneId: primaryZone.id,
-        title: 'Midday EC & pH Dosing Check',
-        category: 'nutrient',
-        startTime: '12:00',
-        durationMin: 20,
-        enabled: true,
-      },
-      {
-        zoneId: primaryZone.id,
-        title: 'Batch 14 Canopy Harvest Inspection',
-        category: 'harvest',
-        startTime: '16:30',
-        durationMin: 30,
-        enabled: true,
-      },
-    ]);
-  }
+  baseInfraPromise = (async () => {
+    const insertedZones = await db
+      .insert(greenhouseZones)
+      .values([
+        {
+          code: 'ZONE-A1',
+          name: 'North Hydroponic Bay',
+          cropType: 'Butterhead Lettuce',
+          status: 'nominal',
+        },
+        {
+          code: 'ZONE-B2',
+          name: 'South Leafy Greens',
+          cropType: 'Genovese Basil',
+          status: 'nominal',
+        },
+      ])
+      .onConflictDoNothing({ target: greenhouseZones.code })
+      .returning();
 
-  return insertedZones;
+    const allZones =
+      insertedZones.length > 0
+        ? insertedZones
+        : await db.select().from(greenhouseZones).orderBy(asc(greenhouseZones.id));
+
+    for (const zone of allZones) {
+      await db
+        .insert(zoneThresholds)
+        .values({
+          zoneId: zone.id,
+          targetTempC: 23,
+          targetMoisturePct: 68,
+          targetCo2Ppm: 900,
+          targetEcMs: 2.1,
+          lightPhotoperiodH: 15,
+          autoIrrigation: true,
+        })
+        .onConflictDoNothing();
+    }
+
+    const primaryZone = allZones[0];
+    if (primaryZone && insertedZones.length > 0) {
+      await db.insert(zoneSchedules).values([
+        {
+          zoneId: primaryZone.id,
+          title: 'Morning NFT Nutrient Circulation',
+          category: 'irrigation',
+          startTime: '06:30',
+          durationMin: 45,
+          enabled: true,
+        },
+        {
+          zoneId: primaryZone.id,
+          title: 'Full-Spectrum LED Canopy Cycle',
+          category: 'lighting',
+          startTime: '07:00',
+          durationMin: 900,
+          enabled: true,
+        },
+        {
+          zoneId: primaryZone.id,
+          title: 'Midday EC & pH Dosing Check',
+          category: 'nutrient',
+          startTime: '12:00',
+          durationMin: 20,
+          enabled: true,
+        },
+        {
+          zoneId: primaryZone.id,
+          title: 'Batch 14 Canopy Harvest Inspection',
+          category: 'harvest',
+          startTime: '16:30',
+          durationMin: 30,
+          enabled: true,
+        },
+      ]);
+    }
+
+    return allZones;
+  })().finally(() => {
+    baseInfraPromise = null;
+  });
+
+  return baseInfraPromise;
 }
 
 async function resolveZoneId(zoneCode?: string, fallbackZoneId?: number | null): Promise<number> {
@@ -219,7 +237,14 @@ async function resolveZoneId(zoneCode?: string, fallbackZoneId?: number | null):
       .from(greenhouseZones)
       .where(eq(greenhouseZones.code, zoneCode))
       .limit(1);
-    if (found) return found.id;
+    if (!found) {
+      const err = new Error(`Unknown zoneCode '${zoneCode}'. Create the zone first or omit zoneCode.`) as Error & {
+        statusCode?: number;
+      };
+      err.statusCode = 400;
+      throw err;
+    }
+    return found.id;
   }
 
   if (fallbackZoneId) {

@@ -414,7 +414,11 @@ export function AiAssistantDrawer({
         },
         body: JSON.stringify({ prompt: q, zoneId: activeZoneId, history: priorHistory }),
       });
-      const data = await res.json();
+      if (res.status === 401) {
+        onRequireAuth();
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setMessages((prev) => [
           ...prev,

@@ -1,0 +1,6 @@
+{
+  "name": "CultivAI",
+  "description": "Real-time hydroponic greenhouse telemetry, AI harvest intelligence, and IoT ingestion platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
